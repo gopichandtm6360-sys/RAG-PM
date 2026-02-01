@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAG Playground — Step by Step</title>
+  <style>
+    body {
+      font-family: Inter, Arial, sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+      margin: 0;
+      padding: 0;
+    }
+
+    header {
+      background: #020617;
+      padding: 16px 24px;
+      border-bottom: 1px solid #1e293b;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      background: #020617;
+      border-right: 1px solid #1e293b;
+      padding: 16px;
+    }
+
+    .step {
+      padding: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .step.active {
+      background: #2563eb;
+    }
+
+    .step.completed {
+      background: #1e40af;
+    }
+
+    /* Main */
+    .main {
+      padding: 24px;
+    }
+
+    .card {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    textarea, input, select {
+      width: 100%;
+      background: #020617;
+      color: #e5e7eb;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 8px;
+      margin-top: 6px;
+    }
+
+    button {
+      background: #2563eb;
+      border: none;
+      color: white;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+
+    button.secondary {
+      background: #334155;
+    }
+
+    .chunk {
+      border: 1px dashed #334155;
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+
+    .vector {
+      font-family: monospace;
+      font-size: 12px;
+      color: #93c5fd;
+    }
+
+    .similarity-bar {
+      height: 8px;
+      background: #2563eb;
+      margin-top: 4px;
+      border-radius: 4px;
+    }
+
+    .flow {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-top: 10px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .label {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>Retrieval-Augmented Generation (RAG) — Visual Playground</h1>
+</header>
+
+<div class="container">
+  <aside class="sidebar" id="steps"></aside>
+  <main class="main" id="content"></main>
+</div>
+
+<script>
+/* ------------------ GLOBAL STATE ------------------ */
+const state = JSON.parse(localStorage.getItem("rag_state")) || {
+  step: 1,
+  document: "",
+  chunks: [],
+  embeddings: {},
+  query: "",
+  queryEmbedding: [],
+  retrieved: [],
+  answer: ""
+};
+
+const VECTOR_SIZE = 8;
+
+/* ------------------ UTILS ------------------ */
+function save() {
+  localStorage.setItem("rag_state", JSON.stringify(state));
+}
+
+function fakeEmbedding(seed) {
+  const vec = [];
+  for (let i = 0; i < VECTOR_SIZE; i++) {
+    vec.push(Number(((Math.sin(seed.charCodeAt(0) + i) + 1) / 2).toFixed(3)));
+  }
+  return vec;
+}
+
+function cosine(a, b) {
+  const dot = a.reduce((s, v, i) => s + v * b[i], 0);
+  const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
+  const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
+  return Number((dot / (magA * magB)).toFixed(3));
+}
+
+/* ------------------ RENDER STEPS ------------------ */
+const stepTitles = [
+  "Text Input & Chunking",
+  "Embedding Creation",
+  "Vector Storage",
+  "User Query Input",
+  "Similarity Retrieval",
+  "Prompt Construction",
+  "LLM Response"
+];
+
+function renderSidebar() {
+  const el = document.getElementById("steps");
+  el.innerHTML = "";
+  stepTitles.forEach((t, i) => {
+    const div = document.createElement("div");
+    div.className = "step" + (state.step === i+1 ? " active" : "");
+    div.textContent = `Step ${i+1}: ${t}`;
+    div.onclick = () => { state.step = i+1; save(); render(); };
+    el.appendChild(div);
+  });
+}
+
+function render() {
+  renderSidebar();
+  const c = document.getElementById("content");
+  c.innerHTML = "";
+
+  c.innerHTML += `
+    <div class="card">
+      <strong>What is happening?</strong>
+      <p>${explanations[state.step-1]}</p>
+      <strong>Why this matters in RAG</strong>
+      <p>${importance[state.step-1]}</p>
+    </div>
+  `;
+
+  steps[state.step-1](c);
+}
+
+/* ------------------ STEP CONTENT ------------------ */
+
+const explanations = [
+  "We break a long document into smaller overlapping chunks.",
+  "Each chunk is converted into a numeric vector (embedding).",
+  "Embeddings are stored so they can be searched later.",
+  "The user query is embedded into the same vector space.",
+  "We retrieve the most similar chunks using cosine similarity.",
+  "We construct the exact prompt sent to the LLM.",
+  "The LLM generates an answer using only retrieved context."
+];
+
+const importance = [
+  "Chunking affects retrieval quality. Retrieval ≠ chunking.",
+  "Embeddings allow semantic search instead of keyword matching.",
+  "Persistence allows reuse and fast retrieval.",
+  "Query and chunks must live in the same space.",
+  "Retrieval happens BEFORE generation.",
+  "LLMs only see the prompt, not your full data.",
+  "This is where hallucination risk is controlled."
+];
+
+const steps = [
+
+/* STEP 1 */
+(c) => {
+  c.innerHTML += `
+    <div class="card">
+      <label>Raw Document</label>
+      <textarea rows="6" onchange="state.document=this.value; save()">${state.document}</textarea>
+      <label>Chunk Size</label>
+      <input type="number" id="cs" value="100">
+      <label>Overlap</label>
+      <input type="number" id="ov" value="20">
+      <button onclick="chunk()">Create Chunks</button>
+    </div>
+  `;
+
+  state.chunks.forEach(ch => {
+    c.innerHTML += `
+      <div class="chunk">
+        <strong>${ch.id}</strong> (${ch.start}–${ch.end})
+        <div>${ch.text}</div>
+      </div>
+    `;
+  });
+},
+
+/* STEP 2 */
+(c) => {
+  state.chunks.forEach(ch => {
+    c.innerHTML += `
+      <div class="chunk">
+        <strong>${ch.id}</strong>
+        <button onclick="embed('${ch.id}')">Generate Embedding</button>
+        ${state.embeddings[ch.id] ? 
+          `<div class="vector">[${state.embeddings[ch.id].slice(0,5).join(", ")}...]</div>
+           <div class="label">Embedding (simulated)</div>` : ""}
+      </div>
+    `;
+  });
+},
+
+/* STEP 3 */
+(c) => {
+  c.innerHTML += `
+    <div class="card">
+      <button onclick="save()">Save Vectors to Local Store</button>
+      <p class="flow">💾 Stored in localStorage</p>
+    </div>
+  `;
+  Object.keys(state.embeddings).forEach(id => {
+    c.innerHTML += `<div class="chunk">${id}</div>`;
+  });
+},
+
+/* STEP 4 */
+(c) => {
+  c.innerHTML += `
+    <div class="card">
+      <label>User Query</label>
+      <input value="${state.query}" onchange="state.query=this.value; save()">
+      <button onclick="state.queryEmbedding=fakeEmbedding(state.query); save(); render()">Embed Query</button>
+      ${state.queryEmbedding.length ? `<div class="vector">[${state.queryEmbedding.join(", ")}]</div>` : ""}
+    </div>
+  `;
+},
+
+/* STEP 5 */
+(c) => {
+  c.innerHTML += `
+    <div class="card">
+      <label>Top-K</label>
+      <input type="number" value="3" id="k">
+      <button onclick="retrieve()">Retrieve</button>
+    </div>
+  `;
+
+  state.retrieved.forEach(r => {
+    c.innerHTML += `
+      <div class="chunk">
+        <strong>${r.id}</strong> — score ${r.score}
+        <div class="similarity-bar" style="width:${r.score*100}%"></div>
+        <div>${r.text}</div>
+      </div>
+    `;
+  });
+},
+
+/* STEP 6 */
+(c) => {
+  c.innerHTML += `
+    <div class="two-col">
+      <div class="card">
+        <strong>Retrieved Context</strong>
+        ${state.retrieved.map(r => `<p>${r.text}</p>`).join("")}
+      </div>
+      <div class="card">
+        <strong>Final Prompt Sent to LLM</strong>
+        <pre>
+System:
+Answer ONLY from context.
+
+Context:
+${state.retrieved.map(r => r.text).join("\n")}
+
+User:
+${state.query}
+        </pre>
+      </div>
+    </div>
+  `;
+},
+
+/* STEP 7 */
+(c) => {
+  c.innerHTML += `
+    <div class="card">
+      <button onclick="answer()">Send to LLM</button>
+      <h3>LLM Response (simulated)</h3>
+      <p>${state.answer}</p>
+      <div class="flow">Query → Retrieval → Prompt → Answer</div>
+    </div>
+  `;
+}
+
+];
+
+/* ------------------ ACTIONS ------------------ */
+
+function chunk() {
+  const size = +document.getElementById("cs").value;
+  const overlap = +document.getElementById("ov").value;
+  state.chunks = [];
+  let i = 0, idx = 0;
+  while (i < state.document.length) {
+    state.chunks.push({
+      id: `chunk_${idx}`,
+      text: state.document.slice(i, i+size),
+      start: i,
+      end: i+size
+    });
+    i += size - overlap;
+    idx++;
+  }
+  save(); render();
+}
+
+function embed(id) {
+  state.embeddings[id] = fakeEmbedding(id);
+  save(); render();
+}
+
+function retrieve() {
+  const k = +document.getElementById("k").value;
+  state.retrieved = state.chunks.map(ch => ({
+    id: ch.id,
+    text: ch.text,
+    score: cosine(state.queryEmbedding, state.embeddings[ch.id])
+  }))
+  .sort((a,b) => b.score - a.score)
+  .slice(0, k);
+  save(); render();
+}
+
+function answer() {
+  state.answer = state.retrieved.length
+    ? "Answer derived strictly from retrieved context."
+    : "Not found in context.";
+  save(); render();
+}
+
+/* ------------------ INIT ------------------ */
+render();
+</script>
+</body>
+</html>
